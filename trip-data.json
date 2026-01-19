@@ -5,8 +5,65 @@
     "startDate": "2026-07-21",
     "endDate": "2026-08-01"
   },
-  "days": [],
-  "flights": [],
+  "days": [
+    {
+      "date": "2026-07-21",
+      "activities": []
+    },
+    {
+      "date": "2026-07-22",
+      "activities": []
+    },
+    {
+      "date": "2026-07-23",
+      "activities": []
+    },
+    {
+      "date": "2026-07-24",
+      "activities": []
+    },
+    {
+      "date": "2026-07-25",
+      "activities": []
+    },
+    {
+      "date": "2026-07-26",
+      "activities": []
+    },
+    {
+      "date": "2026-07-27",
+      "activities": []
+    },
+    {
+      "date": "2026-07-28",
+      "activities": []
+    },
+    {
+      "date": "2026-07-29",
+      "activities": []
+    },
+    {
+      "date": "2026-07-30",
+      "activities": []
+    },
+    {
+      "date": "2026-07-31",
+      "activities": []
+    },
+    {
+      "date": "2026-08-01",
+      "activities": []
+    }
+  ],
+  "flights": [
+    {
+      "title": "Flight",
+      "price": 0,
+      "link": "",
+      "image": "",
+      "note": ""
+    }
+  ],
   "stays": [],
   "expenses": []
 }
