@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Summer 2026 alikhan trip</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <div class="title-row">
+        <div>
+          <h1>Summer 2026 alikhan trip</h1>
+          <div class="sub" id="subtitle">Shared trip builder</div>
+        </div>
+        <div class="badge" id="dateRangeBadge">21 Jul — 1 Aug 2026</div>
+      </div>
+
+      <div class="toolbar">
+        <div class="status" id="syncStatus">Loading…</div>
+
+        <div class="toolbar-right">
+          <button class="btn" id="btnSaveNow" type="button" title="Save now">Save now</button>
+          <button class="btn" id="btnToken" type="button" title="GitHub token">Token</button>
+        </div>
+      </div>
+
+      <div class="panel" id="tokenPanel" hidden>
+        <div class="row">
+          <div class="hint">
+            Чтобы можно было <b>редактировать</b> и сохранять для всех — нужен GitHub fine-grained PAT token с правами:
+            <b>Contents: Read and Write</b> для этого репозитория.
+            <br/>
+            Без токена сайт будет только читать и обновляться каждые 10 секунд.
+          </div>
+        </div>
+
+        <label class="field">
+          <span>GitHub PAT token</span>
+          <input id="ghToken" placeholder="github_pat_..." />
+          <small class="hint">Токен хранится только в твоём браузере.</small>
+        </label>
+
+        <div class="row">
+          <button class="btn primary" id="btnTest" type="button">Test connection</button>
+          <button class="btn" id="btnCloseToken" type="button">Close</button>
+          <div class="status" id="tokenStatus"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="cards">
+      <div class="card">
+        <h2>Budget</h2>
+
+        <div class="budget-grid">
+          <div class="kpi">
+            <div class="kpi-label">Total</div>
+            <div class="kpi-value" id="kpiTotal">$0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Flights</div>
+            <div class="kpi-value" id="kpiFlights">$0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Stay</div>
+            <div class="kpi-value" id="kpiStay">$0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Expenses</div>
+            <div class="kpi-value" id="kpiExpenses">$0</div>
+          </div>
+        </div>
+
+        <div class="row gap">
+          <label class="field compact">
+            <span>Currency</span>
+            <select id="currency">
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="KZT">KZT</option>
+              <option value="RUB">RUB</option>
+            </select>
+          </label>
+
+          <div class="hint">
+            Авто-обновление: <b>каждые 10 секунд</b>. Любое изменение: <b>автосохранение</b>.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Flights</h2>
+          <button class="btn primary" id="addFlight" type="button">+ Add flight</button>
+        </div>
+        <div id="flightsList" class="list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Stay</h2>
+          <button class="btn primary" id="addStay" type="button">+ Add stay</button>
+        </div>
+        <div id="staysList" class="list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Expenses</h2>
+          <button class="btn primary" id="addExpense" type="button">+ Add expense</button>
+        </div>
+        <div id="expensesList" class="list"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Day by day plan</h2>
+        <div class="sub" id="daysSubtitle"></div>
+      </div>
+
+      <div id="days" class="days"></div>
+    </section>
+
+    <footer class="footer">
+      <div class="muted">
+        Hosting: GitHub Pages. Storage: GitHub repo JSON (trip-data.json). No Firebase, no servers.
+      </div>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
