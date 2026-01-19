@@ -8,8 +8,8 @@
 */
 
 const CONFIG = {
-  OWNER: "YOUR_GITHUB_USERNAME",          // <-- поменяй
-  REPO: "YOUR_REPO_NAME",                 // <-- поменяй
+  OWNER: "damiranva2",          // <-- поменяй
+  REPO: "tripsummer2026",                 // <-- поменяй
   BRANCH: "main",
   PATH: "trip-data.json",
   TITLE_FIXED: "Summer 2026 alikhan trip",
@@ -789,3 +789,4 @@ async function init() {
 }
 
 init().catch(err => setStatus(`Init error: ${err.message}`));
+
