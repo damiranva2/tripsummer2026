@@ -58,6 +58,7 @@ let saveTimer = null;
 let saving = false;
 let dirty = false;
 let polling = null;
+let pollingInProgress = false;
 
 function nowTime() {
   return new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -232,14 +233,11 @@ async function saveRemote({ token }) {
 }
 
 async function saveNow() {
-  if (!state) return;
   if (saving) return;
 
   const token = getToken();
   if (!token) {
-    // no token => read-only
-    dirty = false; // we still allow UI editing, but cannot persist globally
-    setStatus(`Read-only (no token). Changes won't save for everyone.`);
+    setStatus("Read-only (no token)");
     return;
   }
 
@@ -247,27 +245,29 @@ async function saveNow() {
   try {
     enforceFixedMeta();
     ensureDays();
-    computeTotals();
 
-    // Try save with current sha. If conflict -> reload and retry once (last-writer-wins).
     try {
       await saveRemote({ token });
     } catch (e) {
-      const isConflict = String(e.message).includes("409");
-      if (!isConflict) throw e;
-
-      // reload latest then overwrite (last writer wins)
-      const remote = await loadRemote({ token });
-      lastRemoteSha = remote.sha;
-      await saveRemote({ token });
+      if (String(e.message).includes("409")) {
+        // reload latest sha and retry once
+        const remote = await loadRemote({ token });
+        lastRemoteSha = remote.sha;
+        await saveRemote({ token });
+      } else {
+        throw e;
+      }
     }
 
     dirty = false;
-    setStatus(`Saved ✅ (${nowTime()})`);
+    setStatus("Saved ✅");
+  } catch (e) {
+    setStatus(`Save error: ${e.message}`);
   } finally {
     saving = false;
   }
 }
+
 
 // ---------- UI rendering ----------
 function itemTemplate({ title, price, link, image, note }, onChange, onDelete) {
@@ -691,34 +691,34 @@ function renderAll(full = true) {
 }
 
 async function pollOnce() {
+  if (saving || pollingInProgress) return;
+
+  pollingInProgress = true;
   try {
-    // For frequent polling we strongly prefer token (rate limit).
-    // If no token, we still try, but can hit rate limit.
     const token = getToken();
     const remote = await loadRemote({ token });
 
-    // init sha
-    if (!lastRemoteSha) lastRemoteSha = remote.sha;
+    if (!lastRemoteSha) {
+      lastRemoteSha = remote.sha;
+      state = remote.json;
+      renderAll();
+      setStatus("Loaded from server");
+      return;
+    }
 
-    // if changed on server
-    if (remote.sha !== lastRemoteSha) {
-      if (!dirty && !saving) {
-        state = remote.json;
-        lastRemoteSha = remote.sha;
-        renderAll();
-        setStatus(`Updated from server 🔄 (${nowTime()})`);
-      } else {
-        // user has unsaved changes -> do not overwrite, but inform
-        setStatus(`Server updated, but you have local changes… (${nowTime()})`);
-      }
-    } else {
-      // no change
-      if (!dirty) setStatus(`Synced ✅ (${nowTime()})`);
+    if (remote.sha !== lastRemoteSha && !dirty) {
+      state = remote.json;
+      lastRemoteSha = remote.sha;
+      renderAll();
+      setStatus("Updated from server 🔄");
     }
   } catch (e) {
     setStatus(`Sync error: ${e.message}`);
+  } finally {
+    pollingInProgress = false;
   }
 }
+
 
 async function testConnection() {
   ui.tokenStatus.textContent = "Testing…";
@@ -789,4 +789,5 @@ async function init() {
 }
 
 init().catch(err => setStatus(`Init error: ${err.message}`));
+
 
