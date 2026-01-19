@@ -57,9 +57,9 @@
   ],
   "flights": [
     {
-      "title": "seattle to tam",
+      "title": "seattle to tampa",
       "price": 1968,
-      "link": "",
+      "link": "https://www.skyscanner.com/transport/flights/seaa/tpaa/260721/260801/config/16177-2607211155--32385-0-17073-2607212029%7C17073-2608010700--32385-0-16177-2608011019?adultsv2=2&cabinclass=economy&childrenv2=14|14&ref=home&rtn=1&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false&fare-attributes=checked-bag",
       "image": "",
       "note": ""
     }
