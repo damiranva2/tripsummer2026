@@ -1,48 +1,54 @@
 /*
-  Summer 2026 alikhan trip
-  - Always "Shared mode": reads/writes trip-data.json in GitHub repo
-  - Auto-refresh: every 10 seconds pulls latest
-  - Auto-save: every change is saved (debounced)
-  - Title is fixed (cannot be edited)
-  - GitHub Pages compatible (no servers)
+  Summer 2026 alikhan trip — FINAL app.js (Cloudflare Workers + KV)
+  - Shared storage for everyone via Cloudflare Worker (NO GitHub API, NO rate limit)
+  - Auto-save on every change (debounced)
+  - Auto-refresh (poll) every 5 seconds
+  - Fixed title + fixed dates (cannot be changed)
+  - Light theme handled by styles.css (this is only JS)
+
+  IMPORTANT: set API_URL to your Worker URL.
 */
 
+const API_URL = "https://summer-2026-trip-api.damiryoubro.workers.dev/"; // <-- your Worker URL
+
 const CONFIG = {
-  OWNER: "damiranva2",          // <-- поменяй
-  REPO: "tripsummer2026",                 // <-- поменяй
-  BRANCH: "main",
-  PATH: "trip-data.json",
   TITLE_FIXED: "Summer 2026 alikhan trip",
   START_DATE: "2026-07-21",
   END_DATE: "2026-08-01",
-  POLL_MS: 10000
+  POLL_MS: 5000,       // realtime-ish refresh
+  SAVE_DEBOUNCE_MS: 400
 };
 
-const LS_TOKEN = "summer2026_trip_gh_token_v1";
+const LS_CLIENT_ID = "summer2026_trip_client_id_v1";
 
 const $ = (sel) => document.querySelector(sel);
 
 const ui = {
+  // header/meta
   subtitle: $("#subtitle"),
   dateRangeBadge: $("#dateRangeBadge"),
   daysSubtitle: $("#daysSubtitle"),
   currency: $("#currency"),
 
+  // budget KPIs
   kpiTotal: $("#kpiTotal"),
   kpiFlights: $("#kpiFlights"),
   kpiStay: $("#kpiStay"),
   kpiExpenses: $("#kpiExpenses"),
 
+  // sync
   syncStatus: $("#syncStatus"),
   btnSaveNow: $("#btnSaveNow"),
-  btnToken: $("#btnToken"),
 
+  // legacy token UI (we hide it if exists)
+  btnToken: $("#btnToken"),
   tokenPanel: $("#tokenPanel"),
   ghToken: $("#ghToken"),
   btnTest: $("#btnTest"),
   btnCloseToken: $("#btnCloseToken"),
   tokenStatus: $("#tokenStatus"),
 
+  // lists
   days: $("#days"),
   flightsList: $("#flightsList"),
   staysList: $("#staysList"),
@@ -53,19 +59,31 @@ const ui = {
 };
 
 let state = null;
-let lastRemoteSha = null;
-let saveTimer = null;
+
+// sync flags
 let saving = false;
 let dirty = false;
-let polling = null;
-let pollingInProgress = false;
+let pollTimer = null;
+let saveTimer = null;
+
+// client identity (for debugging / lastUpdatedBy)
+const clientId = getOrCreateClientId();
+
+function getOrCreateClientId() {
+  let id = localStorage.getItem(LS_CLIENT_ID);
+  if (!id) {
+    id = "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+    localStorage.setItem(LS_CLIENT_ID, id);
+  }
+  return id;
+}
 
 function nowTime() {
   return new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function setStatus(text) {
-  ui.syncStatus.textContent = text;
+  if (ui.syncStatus) ui.syncStatus.textContent = text;
 }
 
 function formatMoney(value, currency) {
@@ -96,7 +114,11 @@ function defaultState() {
       title: CONFIG.TITLE_FIXED,
       currency: "USD",
       startDate: CONFIG.START_DATE,
-      endDate: CONFIG.END_DATE
+      endDate: CONFIG.END_DATE,
+
+      // internal sync hints
+      _lastUpdated: 0,
+      _lastUpdatedBy: "",
     },
     days: [],
     flights: [],
@@ -105,18 +127,22 @@ function defaultState() {
   };
 }
 
-function ensureDays() {
-  const wanted = Array.from(dateRange(CONFIG.START_DATE, CONFIG.END_DATE));
-  const map = new Map((state.days || []).map(d => [d.date, d]));
-  state.days = wanted.map(date => map.get(date) || { date, activities: [] });
-}
-
 function enforceFixedMeta() {
   state.meta = state.meta || {};
   state.meta.title = CONFIG.TITLE_FIXED;
   state.meta.startDate = CONFIG.START_DATE;
   state.meta.endDate = CONFIG.END_DATE;
-  state.meta.currency = state.meta.currency || "USD";
+  if (!state.meta.currency) state.meta.currency = "USD";
+
+  // keep internal fields
+  if (typeof state.meta._lastUpdated !== "number") state.meta._lastUpdated = 0;
+  if (typeof state.meta._lastUpdatedBy !== "string") state.meta._lastUpdatedBy = "";
+}
+
+function ensureDays() {
+  const wanted = Array.from(dateRange(CONFIG.START_DATE, CONFIG.END_DATE));
+  const map = new Map((state.days || []).map(d => [d.date, d]));
+  state.days = wanted.map(date => map.get(date) || { date, activities: [] });
 }
 
 function computeTotals() {
@@ -129,18 +155,31 @@ function computeTotals() {
 
   const total = flights + stays + expenses;
 
-  ui.kpiFlights.textContent = formatMoney(flights, cur);
-  ui.kpiStay.textContent = formatMoney(stays, cur);
-  ui.kpiExpenses.textContent = formatMoney(expenses, cur);
-  ui.kpiTotal.textContent = formatMoney(total, cur);
+  if (ui.kpiFlights) ui.kpiFlights.textContent = formatMoney(flights, cur);
+  if (ui.kpiStay) ui.kpiStay.textContent = formatMoney(stays, cur);
+  if (ui.kpiExpenses) ui.kpiExpenses.textContent = formatMoney(expenses, cur);
+  if (ui.kpiTotal) ui.kpiTotal.textContent = formatMoney(total, cur);
 }
 
 function renderMeta() {
   const start = new Date(CONFIG.START_DATE + "T00:00:00");
   const end = new Date(CONFIG.END_DATE + "T00:00:00");
   const opts = { month: "short", day: "numeric" };
-  ui.dateRangeBadge.textContent = `${start.toLocaleDateString(undefined, opts)} — ${end.toLocaleDateString(undefined, opts)} ${start.getFullYear()}`;
-  ui.daysSubtitle.textContent = `${CONFIG.START_DATE} → ${CONFIG.END_DATE} (${state.days.length} days)`;
+  const year = start.getFullYear();
+
+  if (ui.dateRangeBadge) {
+    ui.dateRangeBadge.textContent = `${start.toLocaleDateString(undefined, opts)} — ${end.toLocaleDateString(undefined, opts)} ${year}`;
+  }
+
+  if (ui.daysSubtitle) {
+    ui.daysSubtitle.textContent = `${CONFIG.START_DATE} → ${CONFIG.END_DATE} (${state.days.length} days)`;
+  }
+
+  if (ui.subtitle) {
+    ui.subtitle.textContent = `Shared trip builder • API: Cloudflare KV • ${dirty ? "editing…" : "synced"}`;
+  }
+
+  if (ui.currency) ui.currency.value = state.meta.currency || "USD";
 }
 
 function makeThumb(url) {
@@ -155,121 +194,6 @@ function makeThumb(url) {
   return el;
 }
 
-function scheduleSave() {
-  dirty = true;
-  setStatus(`Unsaved changes… (${nowTime()})`);
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => saveNow().catch(err => {
-    setStatus(`Save error: ${err.message}`);
-  }), 350);
-}
-
-function sanitize(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function getToken() {
-  return (ui.ghToken.value || localStorage.getItem(LS_TOKEN) || "").trim();
-}
-
-function setToken(v) {
-  ui.ghToken.value = v || "";
-  if (v) localStorage.setItem(LS_TOKEN, v);
-  else localStorage.removeItem(LS_TOKEN);
-}
-
-// ---------- GitHub API ----------
-async function ghRequest(url, { method="GET", token="", body=null } = {}) {
-  const headers = {
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28"
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (body) headers["Content-Type"] = "application/json";
-
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined
-  });
-
-  const text = await res.text();
-  let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch {}
-
-  if (!res.ok) {
-    const msg = (json && json.message) ? json.message : text;
-    throw new Error(`GitHub API ${res.status}: ${msg}`);
-  }
-  return json;
-}
-
-function contentsUrl() {
-  return `https://api.github.com/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${encodeURIComponent(CONFIG.PATH)}?ref=${encodeURIComponent(CONFIG.BRANCH)}`;
-}
-
-async function loadRemote({ token = "" } = {}) {
-  const data = await ghRequest(contentsUrl(), { token });
-  const sha = data.sha;
-  const content = atob((data.content || "").replace(/\n/g, ""));
-  const json = JSON.parse(content);
-  return { sha, json };
-}
-
-async function saveRemote({ token }) {
-  const payload = sanitize(state);
-  const contentB64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload, null, 2))));
-  const url = `https://api.github.com/repos/${CONFIG.OWNER}/${CONFIG.REPO}/contents/${encodeURIComponent(CONFIG.PATH)}`;
-
-  const body = {
-    message: `Update trip data (${new Date().toISOString()})`,
-    content: contentB64,
-    branch: CONFIG.BRANCH
-  };
-  if (lastRemoteSha) body.sha = lastRemoteSha;
-
-  const res = await ghRequest(url, { method: "PUT", token, body });
-  if (res?.content?.sha) lastRemoteSha = res.content.sha;
-}
-
-async function saveNow() {
-  if (saving) return;
-
-  const token = getToken();
-  if (!token) {
-    setStatus("Read-only (no token)");
-    return;
-  }
-
-  saving = true;
-  try {
-    enforceFixedMeta();
-    ensureDays();
-
-    try {
-      await saveRemote({ token });
-    } catch (e) {
-      if (String(e.message).includes("409")) {
-        // reload latest sha and retry once
-        const remote = await loadRemote({ token });
-        lastRemoteSha = remote.sha;
-        await saveRemote({ token });
-      } else {
-        throw e;
-      }
-    }
-
-    dirty = false;
-    setStatus("Saved ✅");
-  } catch (e) {
-    setStatus(`Save error: ${e.message}`);
-  } finally {
-    saving = false;
-  }
-}
-
-
-// ---------- UI rendering ----------
 function itemTemplate({ title, price, link, image, note }, onChange, onDelete) {
   const wrap = document.createElement("div");
   wrap.className = "item";
@@ -298,7 +222,11 @@ function itemTemplate({ title, price, link, image, note }, onChange, onDelete) {
   inPrice.type = "number";
   inPrice.step = "0.01";
   inPrice.value = price ?? "";
-  inPrice.addEventListener("input", () => { onChange({ price: Number(inPrice.value || 0) }); scheduleSave(); renderAll(false); });
+  inPrice.addEventListener("input", () => {
+    onChange({ price: Number(inPrice.value || 0) });
+    scheduleSave();
+    renderAll(false);
+  });
   fPrice.appendChild(inPrice);
 
   row1.appendChild(fTitle);
@@ -368,6 +296,7 @@ function itemTemplate({ title, price, link, image, note }, onChange, onDelete) {
 }
 
 function renderFlights() {
+  if (!ui.flightsList) return;
   ui.flightsList.innerHTML = "";
   (state.flights || []).forEach((f, idx) => {
     ui.flightsList.appendChild(
@@ -381,6 +310,7 @@ function renderFlights() {
 }
 
 function renderStays() {
+  if (!ui.staysList) return;
   ui.staysList.innerHTML = "";
   (state.stays || []).forEach((s, idx) => {
     ui.staysList.appendChild(
@@ -394,7 +324,9 @@ function renderStays() {
 }
 
 function renderExpenses() {
+  if (!ui.expensesList) return;
   ui.expensesList.innerHTML = "";
+
   (state.expenses || []).forEach((x, idx) => {
     const el = document.createElement("div");
     el.className = "item";
@@ -507,7 +439,11 @@ function renderExpenses() {
     bDel.className = "btn danger";
     bDel.type = "button";
     bDel.textContent = "Delete";
-    bDel.addEventListener("click", () => { state.expenses.splice(idx, 1); scheduleSave(); renderAll(); });
+    bDel.addEventListener("click", () => {
+      state.expenses.splice(idx, 1);
+      scheduleSave();
+      renderAll();
+    });
 
     actions.appendChild(aOpen);
     actions.appendChild(bDel);
@@ -522,7 +458,9 @@ function renderExpenses() {
 }
 
 function renderDays() {
+  if (!ui.days) return;
   ui.days.innerHTML = "";
+
   state.days.forEach((d, dayIdx) => {
     const box = document.createElement("div");
     box.className = "day";
@@ -682,6 +620,7 @@ function renderAll(full = true) {
   ensureDays();
   renderMeta();
   computeTotals();
+
   if (full) {
     renderFlights();
     renderStays();
@@ -690,104 +629,167 @@ function renderAll(full = true) {
   }
 }
 
-async function pollOnce() {
-  if (saving || pollingInProgress) return;
+/* ------------------------------
+   Cloudflare API
+-------------------------------- */
 
-  pollingInProgress = true;
+async function loadRemote() {
+  const res = await fetch(API_URL, { method: "GET" });
+  if (!res.ok) throw new Error(`API GET ${res.status}`);
+  return await res.json();
+}
+
+async function saveRemote() {
+  const res = await fetch(API_URL, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(state)
+  });
+  if (!res.ok) throw new Error(`API PUT ${res.status}`);
+}
+
+/* ------------------------------
+   Autosave + Poll
+-------------------------------- */
+
+function markDirty() {
+  dirty = true;
+  setStatus(`Unsaved changes… (${nowTime()})`);
+}
+
+function clearDirtySaved() {
+  dirty = false;
+  setStatus(`Saved ✅ (${nowTime()})`);
+}
+
+function scheduleSave() {
+  markDirty();
+
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveNow().catch(err => setStatus(`Save error: ${err.message}`));
+  }, CONFIG.SAVE_DEBOUNCE_MS);
+}
+
+async function saveNow() {
+  if (!state) return;
+  if (saving) return;
+
+  saving = true;
   try {
-    const token = getToken();
-    const remote = await loadRemote({ token });
+    enforceFixedMeta();
+    ensureDays();
 
-    if (!lastRemoteSha) {
-      lastRemoteSha = remote.sha;
-      state = remote.json;
+    // write sync markers (helps polling logic)
+    state.meta._lastUpdated = Date.now();
+    state.meta._lastUpdatedBy = clientId;
+
+    await saveRemote();
+    clearDirtySaved();
+  } finally {
+    saving = false;
+  }
+}
+
+async function pollOnce() {
+  // Don't overwrite while user is typing or while saving
+  if (saving || dirty) return;
+
+  try {
+    const remote = await loadRemote();
+
+    // First time: adopt remote
+    if (!state) {
+      state = remote;
       renderAll();
-      setStatus("Loaded from server");
+      setStatus(`Loaded ✅ (${nowTime()})`);
       return;
     }
 
-    if (remote.sha !== lastRemoteSha && !dirty) {
-      state = remote.json;
-      lastRemoteSha = remote.sha;
+    const localTs = Number(state?.meta?._lastUpdated || 0);
+    const remoteTs = Number(remote?.meta?._lastUpdated || 0);
+
+    // If remote has newer data, update local
+    if (remoteTs > localTs) {
+      state = remote;
       renderAll();
-      setStatus("Updated from server 🔄");
+      setStatus(`Updated from server 🔄 (${nowTime()})`);
+    } else {
+      setStatus(`Synced ✅ (${nowTime()})`);
     }
   } catch (e) {
     setStatus(`Sync error: ${e.message}`);
-  } finally {
-    pollingInProgress = false;
   }
 }
 
+/* ------------------------------
+   Init + UI bindings
+-------------------------------- */
 
-async function testConnection() {
-  ui.tokenStatus.textContent = "Testing…";
-  try {
-    const token = getToken();
-    if (!token) throw new Error("No token");
-    const remote = await loadRemote({ token });
-    lastRemoteSha = remote.sha;
-    ui.tokenStatus.textContent = "OK ✅ Can read";
-  } catch (e) {
-    ui.tokenStatus.textContent = e.message;
-  }
+function hideLegacyTokenUI() {
+  // We no longer need tokens at all with Cloudflare KV
+  if (ui.btnToken) ui.btnToken.style.display = "none";
+  if (ui.tokenPanel) ui.tokenPanel.style.display = "none";
 }
 
 async function init() {
-  // token UI
-  setToken(localStorage.getItem(LS_TOKEN) || "");
-  ui.btnToken.addEventListener("click", () => ui.tokenPanel.hidden = !ui.tokenPanel.hidden);
-  ui.btnCloseToken.addEventListener("click", () => ui.tokenPanel.hidden = true);
+  hideLegacyTokenUI();
 
-  ui.ghToken.addEventListener("input", () => {
-    setToken(ui.ghToken.value.trim());
-  });
-  ui.btnTest.addEventListener("click", () => testConnection());
-
-  ui.btnSaveNow.addEventListener("click", () => saveNow().catch(e => setStatus(`Save error: ${e.message}`)));
-
-  // Load initial remote state
-  setStatus("Loading from GitHub…");
+  setStatus("Loading from Cloudflare…");
   try {
-    const token = getToken();
-    const remote = await loadRemote({ token });
-    state = remote.json;
-    lastRemoteSha = remote.sha;
-    renderAll();
-    setStatus(`Loaded ✅ (${nowTime()})`);
+    state = await loadRemote();
   } catch (e) {
-    // if cannot load remote -> fallback local default (still works UI)
+    // If API fails, still let UI work locally (not shared)
     state = defaultState();
-    renderAll();
-    setStatus(`Cannot load remote: ${e.message}`);
+    setStatus(`Cannot load API, using local fallback: ${e.message}`);
   }
 
-  // bindings
-  ui.currency.addEventListener("change", () => {
-    state.meta.currency = ui.currency.value;
-    scheduleSave();
-    renderAll(false);
-  });
+  renderAll(true);
+  setStatus(`Loaded ✅ (${nowTime()})`);
 
-  ui.addFlight.addEventListener("click", () => {
-    state.flights.push({ title: "Flight", price: 0, link: "", image: "", note: "" });
-    scheduleSave(); renderAll();
-  });
-  ui.addStay.addEventListener("click", () => {
-    state.stays.push({ title: "Stay", price: 0, link: "", image: "", note: "" });
-    scheduleSave(); renderAll();
-  });
-  ui.addExpense.addEventListener("click", () => {
-    state.expenses.push({ title: "Expense", category: "", day: "", price: 0, link: "", image: "", note: "" });
-    scheduleSave(); renderAll();
-  });
+  // Currency change
+  if (ui.currency) {
+    ui.currency.addEventListener("change", () => {
+      state.meta.currency = ui.currency.value;
+      scheduleSave();
+      renderAll(false);
+    });
+  }
 
-  // start polling every 10s
-  polling = setInterval(() => pollOnce(), CONFIG.POLL_MS);
-  // also do one extra poll shortly after load
-  setTimeout(() => pollOnce(), 2000);
+  // Buttons
+  if (ui.btnSaveNow) {
+    ui.btnSaveNow.addEventListener("click", () => {
+      saveNow().catch(err => setStatus(`Save error: ${err.message}`));
+    });
+  }
+
+  if (ui.addFlight) {
+    ui.addFlight.addEventListener("click", () => {
+      state.flights.push({ title: "Flight", price: 0, link: "", image: "", note: "" });
+      scheduleSave();
+      renderAll();
+    });
+  }
+
+  if (ui.addStay) {
+    ui.addStay.addEventListener("click", () => {
+      state.stays.push({ title: "Stay", price: 0, link: "", image: "", note: "" });
+      scheduleSave();
+      renderAll();
+    });
+  }
+
+  if (ui.addExpense) {
+    ui.addExpense.addEventListener("click", () => {
+      state.expenses.push({ title: "Expense", category: "", day: "", price: 0, link: "", image: "", note: "" });
+      scheduleSave();
+      renderAll();
+    });
+  }
+
+  // Poll for shared updates
+  pollTimer = setInterval(() => pollOnce(), CONFIG.POLL_MS);
+  setTimeout(() => pollOnce(), 1500);
 }
 
 init().catch(err => setStatus(`Init error: ${err.message}`));
-
-
